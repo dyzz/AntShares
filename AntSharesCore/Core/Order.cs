@@ -1,34 +1,83 @@
 ﻿using AntShares.Cryptography;
 using AntShares.IO;
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 
 namespace AntShares.Core
 {
-    public class Order : ISerializable, ISignable
+    public class Order : ISignable
     {
-        public const byte OrderType = 0;
-        public UInt256 AssetType;
-        public UInt256 ValueType;
-        public Int64 Amount;
-        public UInt64 Price;
-        public UInt160 ScriptHash;
+        public UInt256 AssetId;
+        public UInt256 ValueAssetId;
         public UInt160 Agent;
+        /// <summary>
+        /// 买入或卖出的数量，正数表示买入，负数表示卖出
+        /// </summary>
+        public Fixed8 Amount;
+        public Fixed8 Price;
+        public UInt160 Client;
         public TransactionInput[] Inputs;
         public byte[][] Scripts;
 
+        byte[][] ISignable.Scripts
+        {
+            get
+            {
+                return this.Scripts;
+            }
+            set
+            {
+                this.Scripts = value;
+            }
+        }
+
         void ISerializable.Deserialize(BinaryReader reader)
         {
-            if (reader.ReadByte() != OrderType)
-                throw new FormatException();
-            this.AssetType = reader.ReadSerializable<UInt256>();
-            this.ValueType = reader.ReadSerializable<UInt256>();
-            this.Amount = reader.ReadInt64();
-            this.Price = reader.ReadUInt64();
-            this.ScriptHash = reader.ReadSerializable<UInt160>();
-            this.Agent = reader.ReadSerializable<UInt160>();
+            UInt256 asset_id = reader.ReadSerializable<UInt256>();
+            UInt256 value_asset_id = reader.ReadSerializable<UInt256>();
+            if (asset_id == value_asset_id) throw new FormatException();
+            UInt160 agent = reader.ReadSerializable<UInt160>();
+            DeserializeInternal(reader, asset_id, value_asset_id, agent);
+        }
+
+        internal void DeserializeInTransaction(BinaryReader reader, AgencyTransaction tx)
+        {
+            DeserializeInternal(reader, tx.AssetId, tx.ValueAssetId, tx.Agent);
+        }
+
+        private void DeserializeInternal(BinaryReader reader, UInt256 asset_id, UInt256 value_asset_id, UInt160 agent)
+        {
+            this.AssetId = asset_id;
+            this.ValueAssetId = value_asset_id;
+            this.Agent = agent;
+            this.Amount = reader.ReadSerializable<Fixed8>();
+            if (Amount == Fixed8.Zero) throw new FormatException();
+            if (Amount.GetData() % 10000 != 0) throw new FormatException();
+            this.Price = reader.ReadSerializable<Fixed8>();
+            if (Price <= Fixed8.Zero) throw new FormatException();
+            if (Price.GetData() % 10000 != 0) throw new FormatException();
+            this.Client = reader.ReadSerializable<UInt160>();
             this.Inputs = reader.ReadSerializableArray<TransactionInput>();
+            if (Inputs.Distinct().Count() != Inputs.Length)
+                throw new FormatException();
             this.Scripts = reader.ReadBytesArray();
+        }
+
+        void ISignable.FromUnsignedArray(byte[] value)
+        {
+            using (MemoryStream ms = new MemoryStream(value, false))
+            using (BinaryReader reader = new BinaryReader(ms))
+            {
+                this.AssetId = reader.ReadSerializable<UInt256>();
+                this.ValueAssetId = reader.ReadSerializable<UInt256>();
+                this.Agent = reader.ReadSerializable<UInt160>();
+                this.Amount = reader.ReadSerializable<Fixed8>();
+                this.Price = reader.ReadSerializable<Fixed8>();
+                this.Client = reader.ReadSerializable<UInt160>();
+                this.Inputs = reader.ReadSerializableArray<TransactionInput>();
+            }
         }
 
         byte[] ISignable.GetHashForSigning()
@@ -36,13 +85,12 @@ namespace AntShares.Core
             using (MemoryStream ms = new MemoryStream())
             using (BinaryWriter writer = new BinaryWriter(ms))
             {
-                writer.Write(OrderType);
-                writer.Write(AssetType);
-                writer.Write(ValueType);
+                writer.Write(AssetId);
+                writer.Write(ValueAssetId);
+                writer.Write(Agent);
                 writer.Write(Amount);
                 writer.Write(Price);
-                writer.Write(ScriptHash);
-                writer.Write(Agent);
+                writer.Write(Client);
                 writer.Write(Inputs);
                 writer.Flush();
                 return ms.ToArray().Sha256();
@@ -51,30 +99,39 @@ namespace AntShares.Core
 
         UInt160[] ISignable.GetScriptHashesForVerifying()
         {
-            //TODO: 列出需要对订单签名的地址列表
-            //1. 所有的输入地址
-            //2. 如果订单中购买或售出的资产是股权，那么输出ScriptHash也需要对订单签名
-            //需要本地区块链数据库，否则无法验证
-            //3. 无法验证的情况下，抛出异常：
-            //throw new InvalidOperationException();
-
-            throw new NotImplementedException();
-        }
-
-        byte[][] ISignable.GetScriptsForVerifying()
-        {
-            return Scripts;
+            HashSet<UInt160> hashes = new HashSet<UInt160>();
+            RegisterTransaction asset = Blockchain.Default.GetTransaction(AssetId) as RegisterTransaction;
+            if (asset == null) throw new InvalidOperationException();
+            if (asset.AssetType == AssetType.Share)
+            {
+                hashes.Add(Client);
+            }
+            foreach (var group in Inputs.GroupBy(p => p.PrevTxId))
+            {
+                Transaction tx = Blockchain.Default.GetTransaction(group.Key);
+                if (tx == null) throw new InvalidOperationException();
+                hashes.UnionWith(group.Select(p => tx.Outputs[p.PrevIndex].ScriptHash));
+            }
+            return hashes.OrderBy(p => p).ToArray();
         }
 
         void ISerializable.Serialize(BinaryWriter writer)
         {
-            writer.Write(OrderType);
-            writer.Write(AssetType);
-            writer.Write(ValueType);
+            writer.Write(AssetId);
+            writer.Write(ValueAssetId);
+            writer.Write(Agent);
             writer.Write(Amount);
             writer.Write(Price);
-            writer.Write(ScriptHash);
-            writer.Write(Agent);
+            writer.Write(Client);
+            writer.Write(Inputs);
+            writer.Write(Scripts);
+        }
+
+        internal void SerializeInTransaction(BinaryWriter writer)
+        {
+            writer.Write(Amount);
+            writer.Write(Price);
+            writer.Write(Client);
             writer.Write(Inputs);
             writer.Write(Scripts);
         }
@@ -84,17 +141,21 @@ namespace AntShares.Core
             using (MemoryStream ms = new MemoryStream())
             using (BinaryWriter writer = new BinaryWriter(ms))
             {
-                writer.Write(OrderType);
-                writer.Write(AssetType);
-                writer.Write(ValueType);
+                writer.Write(AssetId);
+                writer.Write(ValueAssetId);
+                writer.Write(Agent);
                 writer.Write(Amount);
                 writer.Write(Price);
-                writer.Write(ScriptHash);
-                writer.Write(Agent);
+                writer.Write(Client);
                 writer.Write(Inputs);
                 writer.Flush();
                 return ms.ToArray();
             }
+        }
+
+        public VerificationResult Verify()
+        {
+            return this.VerifySignature();
         }
     }
 }

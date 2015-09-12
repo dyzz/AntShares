@@ -1,13 +1,15 @@
-﻿using AntShares.IO.Json;
+﻿using AntShares.Cryptography;
+using AntShares.IO.Json;
 using System;
 using System.Linq;
+using System.Reflection;
 
 namespace AntShares.Core
 {
     public class SignatureContext
     {
-        private ISignable signable;
-        private UInt160[] scriptHashes;
+        public readonly ISignable Signable;
+        public readonly UInt160[] ScriptHashes;
         private MultiSigContext[] signatures;
 
         public bool Completed
@@ -20,21 +22,21 @@ namespace AntShares.Core
 
         public SignatureContext(ISignable signable)
         {
-            this.signable = signable;
-            this.scriptHashes = signable.GetScriptHashesForVerifying();
-            this.signatures = new MultiSigContext[scriptHashes.Length];
+            this.Signable = signable;
+            this.ScriptHashes = signable.GetScriptHashesForVerifying();
+            this.signatures = new MultiSigContext[ScriptHashes.Length];
         }
 
-        public bool Add(byte[] redeemScript, UInt160 pubKeyHash, byte[] signature)
+        public bool Add(byte[] redeemScript, Secp256r1Point pubkey, byte[] signature)
         {
             UInt160 scriptHash = redeemScript.ToScriptHash();
-            for (int i = 0; i < scriptHashes.Length; i++)
+            for (int i = 0; i < ScriptHashes.Length; i++)
             {
-                if (scriptHashes[i] == scriptHash)
+                if (ScriptHashes[i] == scriptHash)
                 {
                     if (signatures[i] == null)
                         signatures[i] = new MultiSigContext(redeemScript);
-                    return signatures[i].Add(pubKeyHash, signature);
+                    return signatures[i].Add(pubkey, signature);
                 }
             }
             return false;
@@ -47,17 +49,43 @@ namespace AntShares.Core
             return signatures.Select(p => p.GetScript()).ToArray();
         }
 
+        public static SignatureContext Parse(string value)
+        {
+            JObject json = JObject.Parse(value);
+            string typename = string.Format("{0}.{1}", typeof(SignatureContext).Namespace, json["type"].AsString());
+            ISignable signable = Assembly.GetExecutingAssembly().CreateInstance(typename) as ISignable;
+            signable.FromUnsignedArray(json["hex"].AsString().HexToBytes());
+            SignatureContext context = new SignatureContext(signable);
+            JArray multisignatures = (JArray)json["multi_signatures"];
+            for (int i = 0; i < multisignatures.Count; i++)
+            {
+                if (multisignatures[i] != null)
+                {
+                    context.signatures[i] = new MultiSigContext(multisignatures[i]["redeem_script"].AsString().HexToBytes());
+                    JArray sigs = (JArray)multisignatures[i]["signatures"];
+                    for (int j = 0; j < sigs.Count; j++)
+                    {
+                        if (sigs[j] != null)
+                        {
+                            context.signatures[i].signatures[j] = sigs[j].AsString().HexToBytes();
+                        }
+                    }
+                }
+            }
+            return context;
+        }
+
         public override string ToString()
         {
             JObject json = new JObject();
-            json["type"] = signable.GetType().Name;
-            json["hex"] = signable.ToUnsignedArray().ToHexString();
+            json["type"] = Signable.GetType().Name;
+            json["hex"] = Signable.ToUnsignedArray().ToHexString();
             JArray multisignatures = new JArray();
             for (int i = 0; i < signatures.Length; i++)
             {
                 if (signatures[i] == null)
                 {
-                    multisignatures.Add(JNull.Value);
+                    multisignatures.Add(null);
                 }
                 else
                 {
@@ -68,7 +96,7 @@ namespace AntShares.Core
                     {
                         if (signatures[i].signatures[j] == null)
                         {
-                            sigs.Add(JNull.Value);
+                            sigs.Add(null);
                         }
                         else
                         {

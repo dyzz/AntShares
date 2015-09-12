@@ -1,4 +1,7 @@
-﻿using AntShares.Threading;
+﻿using AntShares.Core;
+using AntShares.IO;
+using AntShares.IO.Caching;
+using AntShares.Threading;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -6,6 +9,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -13,13 +17,21 @@ namespace AntShares.Network
 {
     public class LocalNode : IDisposable
     {
-        public const UInt32 PROTOCOL_VERSION = 0;
-        private const int CONNECTED_MAX = 100;
-        private const int PENDING_MAX = CONNECTED_MAX;
-        private const int UNCONNECTED_MAX = 5000;
-        public const int DEFAULT_PORT = 10333;
+        public static event EventHandler<Block> NewBlock;
+        public static event EventHandler<Inventory> NewInventory;
+        public static event EventHandler<Transaction> NewTransaction;
 
-        private static readonly string path_state = Path.Combine(AppDomain.CurrentDomain.SetupInformation.ApplicationBase, "Data", "node.dat");
+        public const uint PROTOCOL_VERSION = 0;
+        private const int CONNECTED_MAX = 10;
+        private const int PENDING_MAX = CONNECTED_MAX;
+        private const int UNCONNECTED_MAX = 100;
+#if TESTNET
+        public const int DEFAULT_PORT = 20333;
+#else
+        public const int DEFAULT_PORT = 10333;
+#endif
+
+        //TODO: 需要搭建一批种子节点
         private static readonly string[] SeedList =
         {
             "seed1.antshares.org",
@@ -29,7 +41,10 @@ namespace AntShares.Network
             "seed5.antshares.org"
         };
 
-        private HashSet<IPEndPoint> unconnectedPeers = new HashSet<IPEndPoint>();
+        internal RelayCache RelayCache = new RelayCache(100);
+        internal static HashSet<UInt256> KnownHashes = new HashSet<UInt256>();
+
+        private static HashSet<IPEndPoint> unconnectedPeers = new HashSet<IPEndPoint>();
         private static HashSet<IPEndPoint> badPeers = new HashSet<IPEndPoint>();
         internal HashSet<RemoteNode> pendingPeers = new HashSet<RemoteNode>();
         internal Dictionary<IPEndPoint, RemoteNode> connectedPeers = new Dictionary<IPEndPoint, RemoteNode>();
@@ -39,6 +54,17 @@ namespace AntShares.Network
         private Worker connectWorker;
         private int started = 0;
         private int disposed = 0;
+
+        public bool FullySynchronized
+        {
+            get
+            {
+                lock (connectedPeers)
+                {
+                    return connectedPeers.Count > 0 && connectedPeers.Values.All(p => p.Version.StartHeight <= Blockchain.Default.Height);
+                }
+            }
+        }
 
         public int RemoteNodeCount
         {
@@ -55,8 +81,15 @@ namespace AntShares.Network
             if (port == 0)
                 port = DEFAULT_PORT;
             this.LocalEndpoint = new IPEndPoint(Dns.GetHostEntry(Dns.GetHostName()).AddressList.FirstOrDefault(p => p.AddressFamily == AddressFamily.InterNetwork), port);
-            this.connectWorker = new Worker(string.Format("ConnectToPeersLoop@{0}", LocalEndpoint), ConnectToPeersLoop, true, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+            this.connectWorker = new Worker(ConnectToPeersLoop, TimeSpan.FromSeconds(5));
             this.UserAgent = string.Format("/AntSharesCore:{0}/", Assembly.GetExecutingAssembly().GetName().Version.ToString(3));
+        }
+
+        public async Task ConnectToPeerAsync(string hostNameOrAddress)
+        {
+            IPHostEntry entry = await Dns.GetHostEntryAsync(hostNameOrAddress);
+            IPAddress ipAddress = entry.AddressList.FirstOrDefault();
+            await ConnectToPeerAsync(new IPEndPoint(ipAddress, DEFAULT_PORT));
         }
 
         public async Task ConnectToPeerAsync(IPEndPoint remoteEndpoint)
@@ -76,6 +109,7 @@ namespace AntShares.Network
                 remoteNode = new RemoteNode(this, remoteEndpoint);
                 pendingPeers.Add(remoteNode);
                 remoteNode.Disconnected += RemoteNode_Disconnected;
+                remoteNode.NewInventory += RemoteNode_NewInventory;
                 remoteNode.NewPeers += RemoteNode_NewPeers;
             }
             await remoteNode.ConnectAsync();
@@ -89,47 +123,30 @@ namespace AntShares.Network
             int maxConnections = Math.Max(CONNECTED_MAX + 20, PENDING_MAX);
             if (connectedCount < CONNECTED_MAX && pendingCount < PENDING_MAX && (connectedCount + pendingCount) < maxConnections)
             {
-                List<Task> tasks = new List<Task>();
+                Task[] tasks;
                 if (unconnectedCount > 0)
                 {
-                    IPEndPoint[] remoteEndpoints;
                     lock (unconnectedPeers)
                     {
-                        remoteEndpoints = unconnectedPeers.Take(maxConnections - (connectedCount + pendingCount)).ToArray();
-                    }
-                    foreach (IPEndPoint remoteEndpoint in remoteEndpoints)
-                    {
-                        if (cancel.IsCancellationRequested)
-                            break;
-                        tasks.Add(ConnectToPeerAsync(remoteEndpoint));
+                        tasks = unconnectedPeers.Take(maxConnections - (connectedCount + pendingCount)).Select(p => ConnectToPeerAsync(p)).ToArray();
                     }
                 }
                 else if (connectedCount > 0)
                 {
-                    RemoteNode[] remoteNodes;
                     lock (connectedPeers)
                     {
-                        remoteNodes = connectedPeers.Values.ToArray();
-                    }
-                    foreach (RemoteNode remoteNode in remoteNodes)
-                    {
-                        if (cancel.IsCancellationRequested)
-                            return;
-                        tasks.Add(remoteNode.RequestPeersAsync());
+                        tasks = connectedPeers.Values.Select(p => p.RequestPeersAsync()).ToArray();
                     }
                 }
                 else
                 {
-                    foreach (string hostNameOrAddress in SeedList)
-                    {
-                        IPAddress ipAddress = Dns.GetHostEntry(hostNameOrAddress).AddressList.FirstOrDefault();
-                        if (ipAddress != null)
-                        {
-                            tasks.Add(ConnectToPeerAsync(new IPEndPoint(ipAddress, DEFAULT_PORT)));
-                        }
-                    }
+                    tasks = SeedList.Select(p => ConnectToPeerAsync(p)).ToArray();
                 }
-                Task.WaitAll(tasks.ToArray());
+                try
+                {
+                    Task.WaitAll(tasks.ToArray());
+                }
+                catch (AggregateException) { };
             }
         }
 
@@ -144,30 +161,19 @@ namespace AntShares.Network
                 connectWorker.Dispose();
                 if (started > 0)
                 {
-                    IPEndPoint[] peers;
                     lock (unconnectedPeers)
                     {
-                        lock (connectedPeers)
+                        if (unconnectedPeers.Count < UNCONNECTED_MAX)
                         {
-                            peers = unconnectedPeers.Union(connectedPeers.Keys).Take(UNCONNECTED_MAX).ToArray();
-                        }
-                    }
-                    using (FileStream fs = new FileStream(path_state, FileMode.Create, FileAccess.Write, FileShare.None))
-                    using (BinaryWriter writer = new BinaryWriter(fs))
-                    {
-                        writer.Write(peers.Length);
-                        foreach (IPEndPoint endpoint in peers)
-                        {
-                            writer.Write(endpoint.Address.GetAddressBytes().Take(4).ToArray());
-                            writer.Write((UInt16)endpoint.Port);
+                            lock (connectedPeers)
+                            {
+                                unconnectedPeers.UnionWith(connectedPeers.Keys.Take(UNCONNECTED_MAX - unconnectedPeers.Count));
+                            }
                         }
                     }
                     lock (connectedPeers)
                     {
-                        foreach (RemoteNode remoteNode in connectedPeers.Values.ToArray())
-                        {
-                            remoteNode.Disconnect(false);
-                        }
+                        Task.WaitAll(connectedPeers.Values.Select(p => Task.Run(() => p.Disconnect(false))).ToArray());
                     }
                 }
             }
@@ -181,10 +187,52 @@ namespace AntShares.Network
             }
         }
 
+        public static void LoadState(Stream stream)
+        {
+            unconnectedPeers.Clear();
+            using (BinaryReader reader = new BinaryReader(stream, Encoding.ASCII, true))
+            {
+                int count = reader.ReadInt32();
+                for (int i = 0; i < count; i++)
+                {
+                    IPAddress address = new IPAddress(reader.ReadBytes(4));
+                    int port = reader.ReadUInt16();
+                    unconnectedPeers.Add(new IPEndPoint(address, port));
+                }
+            }
+        }
+
+        public async Task<bool> RelayAsync(Inventory data)
+        {
+            bool unknown;
+            lock (KnownHashes)
+            {
+                unknown = KnownHashes.Add(data.Hash);
+            }
+            if (data.InventoryType == InventoryType.TX && unknown)
+            {
+                Transaction tx = (Transaction)data;
+                if (!Blockchain.Default.ContainsTransaction(tx.Hash) && tx.Verify() == VerificationResult.OK && NewTransaction != null)
+                    NewTransaction(this, tx);
+            }
+            if (connectedPeers.Count == 0) return false;
+            RemoteNode[] remoteNodes;
+            lock (connectedPeers)
+            {
+                if (connectedPeers.Count == 0) return false;
+                remoteNodes = connectedPeers.Values.ToArray();
+            }
+            if (remoteNodes.Length == 0) return false;
+            RelayCache.Add(data);
+            await Task.WhenAny(remoteNodes.Select(p => p.RelayAsync(data)));
+            return true;
+        }
+
         private void RemoteNode_Disconnected(object sender, bool error)
         {
             RemoteNode remoteNode = (RemoteNode)sender;
             remoteNode.Disconnected -= RemoteNode_Disconnected;
+            remoteNode.NewInventory -= RemoteNode_NewInventory;
             remoteNode.NewPeers -= RemoteNode_NewPeers;
             if (error)
             {
@@ -204,6 +252,33 @@ namespace AntShares.Network
                         connectedPeers.Remove(remoteNode.RemoteEndpoint);
                     }
                 }
+            }
+        }
+
+        private void RemoteNode_NewInventory(object sender, Inventory inventory)
+        {
+            lock (KnownHashes)
+            {
+                if (!KnownHashes.Add(inventory.Hash))
+                    return;
+            }
+            VerificationResult vr = inventory.Verify();
+            if ((vr & ~(VerificationResult.Incapable | VerificationResult.LackOfInformation)) > 0)
+                return;
+            if (inventory.InventoryType == InventoryType.TX && vr.HasFlag(VerificationResult.LackOfInformation))
+                return;
+            RelayAsync(inventory).Void();
+            if (NewInventory != null)
+            {
+                NewInventory(this, inventory);
+            }
+            if (inventory.InventoryType == InventoryType.Block && NewBlock != null)
+            {
+                NewBlock(this, (Block)inventory);
+            }
+            if (inventory.InventoryType == InventoryType.TX && NewTransaction != null && vr == VerificationResult.OK)
+            {
+                NewTransaction(this, (Transaction)inventory);
             }
         }
 
@@ -230,35 +305,57 @@ namespace AntShares.Network
             }
         }
 
+        public static void SaveState(Stream stream)
+        {
+            IPEndPoint[] peers;
+            lock (unconnectedPeers)
+            {
+                peers = unconnectedPeers.Take(UNCONNECTED_MAX).ToArray();
+            }
+            if (peers.Length == 0) return;
+            using (BinaryWriter writer = new BinaryWriter(stream, Encoding.ASCII, true))
+            {
+                writer.Write(peers.Length);
+                foreach (IPEndPoint endpoint in peers)
+                {
+                    writer.Write(endpoint.Address.GetAddressBytes().Take(4).ToArray());
+                    writer.Write((ushort)endpoint.Port);
+                }
+            }
+        }
+
         public async void Start()
         {
             if (Interlocked.Exchange(ref started, 1) == 0)
             {
-                if (File.Exists(path_state))
-                {
-                    using (FileStream fs = new FileStream(path_state, FileMode.Open, FileAccess.Read, FileShare.Read))
-                    using (BinaryReader reader = new BinaryReader(fs))
-                    {
-                        int count = reader.ReadInt32();
-                        for (int i = 0; i < count; i++)
-                        {
-                            IPAddress address = new IPAddress(reader.ReadBytes(4));
-                            int port = reader.ReadUInt16();
-                            unconnectedPeers.Add(new IPEndPoint(address, port));
-                        }
-                    }
-                }
                 connectWorker.Start();
                 listener.Start();
                 while (disposed == 0)
                 {
-                    RemoteNode remoteNode = new RemoteNode(this, await listener.AcceptTcpClientAsync());
+                    TcpClient tcp;
+                    try
+                    {
+                        tcp = await listener.AcceptTcpClientAsync();
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        continue;
+                    }
+                    RemoteNode remoteNode = new RemoteNode(this, tcp);
                     lock (pendingPeers)
                     {
                         pendingPeers.Add(remoteNode);
                     }
                     remoteNode.StartProtocolAsync().Void();
                 }
+            }
+        }
+
+        public async Task WaitForNodesAsync(int count = 1)
+        {
+            while (connectedPeers.Count < count)
+            {
+                await connectWorker.WaitAsync();
             }
         }
     }

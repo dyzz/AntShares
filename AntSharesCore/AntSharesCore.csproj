@@ -17,7 +17,7 @@
     <DebugType>full</DebugType>
     <Optimize>false</Optimize>
     <OutputPath>bin\Debug\</OutputPath>
-    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <DefineConstants>TRACE;DEBUG;TESTNET</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
@@ -42,27 +42,44 @@
     <Compile Include="Core\AgencyTransaction.cs" />
     <Compile Include="Core\Block.cs" />
     <Compile Include="Core\Blockchain.cs" />
+    <Compile Include="Core\BlockchainAbility.cs" />
+    <Compile Include="Core\BlockHeader.cs" />
     <Compile Include="Core\ContractTransaction.cs" />
+    <Compile Include="Core\EnrollmentTransaction.cs" />
     <Compile Include="Core\GenerationTransaction.cs" />
     <Compile Include="Core\Helper.cs" />
+    <Compile Include="IO\Caching\Cache.cs" />
+    <Compile Include="IO\Caching\FIFOCache.cs" />
+    <Compile Include="Miner\BlockConsensusRequest.cs" />
+    <Compile Include="Miner\BlockConsensusResponse.cs" />
+    <Compile Include="Network\Inventory.cs" />
     <Compile Include="Core\ISignable.cs" />
+    <Compile Include="Core\IssueTransaction.cs" />
     <Compile Include="Core\MultiSigContext.cs" />
     <Compile Include="Core\Order.cs" />
     <Compile Include="Core\RegisterTransaction.cs" />
-    <Compile Include="Core\RegisterType.cs" />
+    <Compile Include="Core\AssetType.cs" />
     <Compile Include="Core\Scripts\ScriptBuilder.cs" />
     <Compile Include="Core\Scripts\ScriptEngine.cs" />
     <Compile Include="Core\Scripts\ScriptOp.cs" />
     <Compile Include="Core\Scripts\Stack.cs" />
     <Compile Include="Core\SignatureContext.cs" />
+    <Compile Include="Core\SplitOrder.cs" />
     <Compile Include="Core\Transaction.cs" />
     <Compile Include="Core\TransactionAttribute.cs" />
     <Compile Include="Core\TransactionAttributeUsage.cs" />
     <Compile Include="Core\TransactionInput.cs" />
     <Compile Include="Core\TransactionOutput.cs" />
+    <Compile Include="Core\TransactionResult.cs" />
     <Compile Include="Core\TransactionType.cs" />
+    <Compile Include="Core\VerificationResult.cs" />
+    <Compile Include="Core\Vote.cs" />
+    <Compile Include="Core\VotingTransaction.cs" />
     <Compile Include="Cryptography\Helper.cs" />
     <Compile Include="Cryptography\MerkleTree.cs" />
+    <Compile Include="Fixed8.cs" />
+    <Compile Include="IO\Caching\RelayCache.cs" />
+    <Compile Include="IO\Caching\LRUCache.cs" />
     <Compile Include="IO\Helper.cs" />
     <Compile Include="IO\ISerializable.cs" />
     <Compile Include="Cryptography\Base58.cs" />
@@ -72,16 +89,20 @@
     <Compile Include="Helper.cs" />
     <Compile Include="IO\Json\JArray.cs" />
     <Compile Include="IO\Json\JBoolean.cs" />
-    <Compile Include="IO\Json\JNull.cs" />
     <Compile Include="IO\Json\JNumber.cs" />
     <Compile Include="IO\Json\JObject.cs" />
     <Compile Include="IO\Json\JString.cs" />
     <Compile Include="Network\LocalNode.cs" />
     <Compile Include="Network\Message.cs" />
+    <Compile Include="Network\Mission.cs" />
     <Compile Include="Network\Payloads\AddrPayload.cs" />
+    <Compile Include="Network\Payloads\GetBlocksPayload.cs" />
     <Compile Include="Network\Payloads\GetDataPayload.cs" />
-    <Compile Include="Network\Payloads\InventoryType.cs" />
+    <Compile Include="Network\Payloads\HeadersPayload.cs" />
+    <Compile Include="Network\Payloads\Helper.cs" />
+    <Compile Include="Network\InventoryType.cs" />
     <Compile Include="Network\Payloads\InventoryVector.cs" />
+    <Compile Include="Network\Payloads\InvPayload.cs" />
     <Compile Include="Network\Payloads\NetworkAddressWithTime.cs" />
     <Compile Include="Network\Payloads\VersionPayload.cs" />
     <Compile Include="Network\RemoteNode.cs" />

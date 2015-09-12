@@ -1,4 +1,5 @@
 ﻿using AntShares.Core.Scripts;
+using AntShares.Cryptography;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -11,7 +12,7 @@ namespace AntShares.Core
         internal byte[][] signatures;
 
         private byte m;
-        private byte[][] pubkeys;
+        private Secp256r1Point[] pubkeys;
 
         public bool Completed
         {
@@ -36,27 +37,27 @@ namespace AntShares.Core
             this.m = (byte)(redeemScript[i++] - 0x50);
             if (m < 1)
                 throw new FormatException();
-            List<byte[]> pubkeys = new List<byte[]>();
+            List<Secp256r1Point> pubkeys = new List<Secp256r1Point>();
             while (redeemScript[i] == 33)
             {
                 byte[] pubkey = new byte[redeemScript[i]];
                 Buffer.BlockCopy(redeemScript, i + 1, pubkey, 0, redeemScript[i]);
-                pubkeys.Add(pubkey);
+                pubkeys.Add(Secp256r1Point.DecodePoint(pubkey));
                 i += redeemScript[i] + 1;
             }
-            if (pubkeys.Count != redeemScript[i] || pubkeys.Count < m)
+            if (pubkeys.Count != redeemScript[i] - 0x50 || pubkeys.Count < m)
                 throw new FormatException();
             this.pubkeys = pubkeys.ToArray();
             this.signatures = new byte[pubkeys.Count][];
         }
 
-        public bool Add(UInt160 pubKeyHash, byte[] signature)
+        public bool Add(Secp256r1Point pubkey, byte[] signature)
         {
             if (signature.Length != 64)
                 throw new ArgumentException();
             for (int i = 0; i < pubkeys.Length; i++)
             {
-                if (pubkeys[i].ToPublicKeyHash() == pubKeyHash)
+                if (pubkeys[i] == pubkey)
                 {
                     if (signatures[i] != null)
                         return false;

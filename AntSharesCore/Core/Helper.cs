@@ -27,36 +27,6 @@ namespace AntShares.Core
             return Base58.Encode(data.Concat(data.Sha256().Sha256().Take(4)).ToArray());
         }
 
-        public static UInt160 ToPublicKeyHash(this byte[] pubkey)
-        {
-            switch (pubkey.Length)
-            {
-                case 33:
-                    break;
-                case 64:
-                case 65:
-                    pubkey = new byte[] { (byte)(pubkey[pubkey.Length - 1] % 2 + 2) }.Concat(pubkey.Skip(pubkey.Length - 64).Take(32)).ToArray();
-                    break;
-                case 72:
-                case 104:
-                    pubkey = new byte[] { (byte)(pubkey[71] % 2 + 2) }.Concat(pubkey.Skip(8).Take(32)).ToArray();
-                    break;
-                default:
-                    throw new FormatException();
-            }
-            return new UInt160(pubkey.Sha256().RIPEMD160());
-        }
-
-        public static UInt64 ToSatoshi(this decimal value)
-        {
-            if (value < 0)
-                throw new ArgumentOutOfRangeException();
-            value *= 100000000;
-            if (value > UInt64.MaxValue)
-                throw new ArgumentOutOfRangeException();
-            return (UInt64)value;
-        }
-
         public static UInt160 ToScriptHash(this string address)
         {
             byte[] data = Base58.Decode(address);
@@ -74,22 +44,30 @@ namespace AntShares.Core
             return new UInt160(redeemScript.Sha256().RIPEMD160());
         }
 
-        internal static bool Verify(this ISignable signable)
+        internal static VerificationResult VerifySignature(this ISignable signable)
         {
-            UInt160[] hashes = signable.GetScriptHashesForVerifying();
-            byte[][] scripts = signable.GetScriptsForVerifying();
+            UInt160[] hashes;
+            try
+            {
+                hashes = signable.GetScriptHashesForVerifying();
+            }
+            catch (InvalidOperationException)
+            {
+                return VerificationResult.LackOfInformation;
+            }
+            byte[][] scripts = signable.Scripts;
             if (hashes.Length != scripts.Length)
-                return false;
+                return VerificationResult.InvalidSignature;
             for (int i = 0; i < hashes.Length; i++)
             {
                 using (ScriptBuilder sb = new ScriptBuilder())
                 {
                     byte[] script = sb.Add(scripts[i]).Add(ScriptOp.OP_DUP).Add(ScriptOp.OP_HASH160).Push(hashes[i]).Add(ScriptOp.OP_EQUALVERIFY).Add(ScriptOp.OP_EVAL).ToArray();
                     if (!ScriptEngine.Execute(script, signable.GetHashForSigning()))
-                        return false;
+                        return VerificationResult.InvalidSignature;
                 }
             }
-            return true;
+            return VerificationResult.OK;
         }
     }
 }

@@ -1,12 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Numerics;
 using System.Text;
 
 namespace AntShares
 {
-    internal static class Helper
+    public static class Helper
     {
         private static readonly DateTime unixEpoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
@@ -27,13 +28,13 @@ namespace AntShares
                 : (w < 1 << 29 ? (w < 1 << 28 ? 28 : 29) : (w < 1 << 30 ? 30 : 31)))));
         }
 
-        public static int GetBitLength(this BigInteger i)
+        internal static int GetBitLength(this BigInteger i)
         {
             byte[] b = i.ToByteArray();
             return (b.Length - 1) * 8 + BitLen(i.Sign > 0 ? b[b.Length - 1] : 255 - b[b.Length - 1]);
         }
 
-        public static int GetLowestSetBit(this BigInteger i)
+        internal static int GetLowestSetBit(this BigInteger i)
         {
             if (i.Sign == 0)
                 return -1;
@@ -59,7 +60,7 @@ namespace AntShares
             return result;
         }
 
-        public static BigInteger Mod(this BigInteger x, BigInteger y)
+        internal static BigInteger Mod(this BigInteger x, BigInteger y)
         {
             x %= y;
             if (x.Sign < 0)
@@ -67,7 +68,7 @@ namespace AntShares
             return x;
         }
 
-        public static BigInteger NextBigInteger(this Random rand, int sizeInBits)
+        internal static BigInteger NextBigInteger(this Random rand, int sizeInBits)
         {
             if (sizeInBits < 0)
                 throw new ArgumentException("sizeInBits must be non-negative");
@@ -82,7 +83,20 @@ namespace AntShares
             return new BigInteger(b);
         }
 
-        public static bool TestBit(this BigInteger i, int index)
+        public static Fixed8 Sum(this IEnumerable<Fixed8> source)
+        {
+            return new Fixed8
+            {
+                value = source.Sum(p => p.value)
+            };
+        }
+
+        public static Fixed8 Sum<TSource>(this IEnumerable<TSource> source, Func<TSource, Fixed8> selector)
+        {
+            return source.Select(selector).Sum();
+        }
+
+        internal static bool TestBit(this BigInteger i, int index)
         {
             return (i.ToByteArray()[index / 8] & 1 << index % 8) > 0;
         }
@@ -108,6 +122,57 @@ namespace AntShares
         public static UInt32 ToTimestamp(this DateTime time)
         {
             return (UInt32)(time.ToUniversalTime() - unixEpoch).TotalSeconds;
+        }
+
+        internal static long WeightedAverage<T>(this IEnumerable<T> source, Func<T, long> valueSelector, Func<T, long> weightSelector)
+        {
+            long sum_weight = 0;
+            long sum_value = 0;
+            foreach (T item in source)
+            {
+                long weight = weightSelector(item);
+                sum_weight += weight;
+                sum_value += valueSelector(item) * weight;
+            }
+            return sum_value / sum_weight;
+        }
+
+        internal static IEnumerable<TResult> WeightedFilter<T, TResult>(this IList<T> source, double start, double end, Func<T, long> weightSelector, Func<T, long, TResult> resultSelector)
+        {
+            if (source == null) throw new ArgumentNullException(nameof(source));
+            if (start < 0 || start > 1) throw new ArgumentOutOfRangeException(nameof(start));
+            if (end < start || start + end > 1) throw new ArgumentOutOfRangeException(nameof(end));
+            if (weightSelector == null) throw new ArgumentNullException(nameof(weightSelector));
+            if (resultSelector == null) throw new ArgumentNullException(nameof(resultSelector));
+            if (source.Count == 0 || start == end) yield break;
+            double amount = source.Sum(weightSelector);
+            long sum = 0;
+            double current = 0;
+            foreach (T item in source)
+            {
+                if (current >= end) break;
+                long weight = weightSelector(item);
+                sum += weight;
+                double old = current;
+                current = sum / amount;
+                if (current <= start) continue;
+                if (old < start)
+                {
+                    if (current > end)
+                    {
+                        weight = (long)((end - start) * amount);
+                    }
+                    else
+                    {
+                        weight = (long)((current - start) * amount);
+                    }
+                }
+                else if (current > end)
+                {
+                    weight = (long)((end - old) * amount);
+                }
+                yield return resultSelector(item, weight);
+            }
         }
     }
 }

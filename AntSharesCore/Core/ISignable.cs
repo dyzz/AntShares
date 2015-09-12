@@ -1,13 +1,15 @@
-﻿namespace AntShares.Core
+﻿using AntShares.IO;
+
+namespace AntShares.Core
 {
-    public interface ISignable
+    public interface ISignable : ISerializable
     {
+        byte[][] Scripts { get; set; }
+
+        void FromUnsignedArray(byte[] value);
         byte[] GetHashForSigning();
-
         UInt160[] GetScriptHashesForVerifying();
-
-        byte[][] GetScriptsForVerifying();
-
         byte[] ToUnsignedArray();
+        VerificationResult Verify();
     }
 }
